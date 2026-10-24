@@ -74,6 +74,9 @@ class MainWindow(QMainWindow):
         open_act = QAction("Open Project…", self); open_act.setShortcut("Ctrl+O")
         open_act.triggered.connect(self.open_project_prompt); file_menu.addAction(open_act)
 
+        self._recent_menu = file_menu.addMenu("Open Recent")
+        self._refresh_recent_menu()
+
         open_img_act = QAction("Open Image…", self); open_img_act.setShortcut("Ctrl+Shift+O")
         open_img_act.triggered.connect(self.open_image_directly); file_menu.addAction(open_img_act)
 
@@ -417,6 +420,19 @@ class MainWindow(QMainWindow):
         tol_row.addWidget(self.tolerance_spin)
         v.addLayout(tol_row)
 
+        # brush hardness
+        hard_row = QHBoxLayout()
+        hard_row.addWidget(QLabel("Hardness"))
+        self.hardness_slider = QSlider(Qt.Horizontal)
+        self.hardness_slider.setRange(0, 100)
+        self.hardness_slider.setValue(0)
+        self.hardness_slider.setToolTip("0 = hard edge, 100 = soft edge")
+        self.hardness_slider.valueChanged.connect(self._on_hardness_changed)
+        hard_row.addWidget(self.hardness_slider, 1)
+        self.hardness_label = QLabel("0%")
+        hard_row.addWidget(self.hardness_label)
+        v.addLayout(hard_row)
+
         # ---------- glow controls (for text/shape selections) ----------
         glow_row = QHBoxLayout()
         glow_row.addWidget(QLabel("Glow"))
@@ -458,6 +474,7 @@ class MainWindow(QMainWindow):
         self.layer_list.setDefaultDropAction(Qt.MoveAction)
         self.layer_list.itemClicked.connect(self._on_layer_clicked)
         self.layer_list.itemChanged.connect(self._on_layer_item_changed)
+        self.layer_list.itemDoubleClicked.connect(self._on_layer_double_clicked)
         self.layer_list.model().rowsMoved.connect(self._on_rows_moved)
         v.addWidget(self.layer_list)
 
@@ -1288,6 +1305,71 @@ class MainWindow(QMainWindow):
             except Exception: pass
         super().closeEvent(event)
 
+    # ---------- recent files ----------
+    def _recent_path(self):
+        from pathlib import Path
+        cfg = Path.home() / ".config" / "python_photoshop"
+        cfg.mkdir(parents=True, exist_ok=True)
+        return cfg / "recent.json"
+
+    def _load_recent(self):
+        try:
+            import json
+            return json.loads(self._recent_path().read_text())
+        except Exception:
+            return []
+
+    def _save_recent(self, paths):
+        try:
+            import json
+            self._recent_path().write_text(json.dumps(paths[:10], indent=2))
+        except Exception:
+            pass
+
+    def _add_recent(self, path: str):
+        paths = self._load_recent()
+        path = str(path)
+        if path in paths:
+            paths.remove(path)
+        paths.insert(0, path)
+        self._save_recent(paths)
+        self._refresh_recent_menu()
+
+    def _refresh_recent_menu(self):
+        self._recent_menu.clear()
+        paths = self._load_recent()
+        if not paths:
+            act = QAction("(none)", self); act.setEnabled(False)
+            self._recent_menu.addAction(act)
+            return
+        for p in paths:
+            from pathlib import Path as _P
+            label = _P(p).name
+            act = QAction(label, self)
+            act.setToolTip(p)
+            act.triggered.connect(lambda _=False, path=p: self._open_recent(path))
+            self._recent_menu.addAction(act)
+        self._recent_menu.addSeparator()
+        clear = QAction("Clear Recent", self)
+        clear.triggered.connect(lambda: (self._save_recent([]), self._refresh_recent_menu()))
+        self._recent_menu.addAction(clear)
+
+    def _open_recent(self, path):
+        from pathlib import Path as _P
+        from core.project import Project
+        try:
+            project = Project.load(_P(path))
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Open failed", str(e))
+            return
+        canvas = self._new_canvas()
+        self._add_tab(project.name, canvas)
+        self._bind_project_to_canvas(project, canvas)
+        self.undo_stack = canvas.undo_stack
+        self._add_recent(str(project.project_dir))
+        self.statusBar().showMessage(f"Opened → {path}")
+
     # ---------- collab ----------
     def _collab_emit(self, msg: dict):
         s = getattr(self, "_collab_session", None)
@@ -1871,10 +1953,34 @@ class MainWindow(QMainWindow):
         if self.canvas is not None:
             self.canvas.shape_kind = kind
 
+    def _on_hardness_changed(self, v: int):
+        self.hardness_label.setText(f"{v}%")
+        if self.canvas is not None:
+            self.canvas.brush_hardness = v / 100.0
+
     def _on_tolerance_changed(self, v):
         self._fill_tolerance = v
         if self.canvas is not None:
             self.canvas.fill_tolerance = v
+
+    def _on_layer_double_clicked(self, item):
+        """Enter inline rename mode on double-click."""
+        self.layer_list.editItem(item)
+
+    def _on_layer_renamed(self, item):
+        """Called when edit finishes — apply new name to the model."""
+        if not self.project:
+            return
+        idx = self._ui_index_to_model(self.layer_list.row(item))
+        if not (0 <= idx < len(self.project.layers)):
+            return
+        new_name = item.text().strip() or f"Layer {idx + 1}"
+        layer = self.project.layers[idx]
+        if layer.name != new_name:
+            layer.name = new_name
+            self._collab_emit({"type": "layer_rename",
+                               "index": idx, "name": new_name})
+            self.statusBar().showMessage(f"Renamed: {new_name}")
 
     def _on_layer_clicked(self, item):
         if not self.project:
@@ -1978,7 +2084,7 @@ class MainWindow(QMainWindow):
         self.layer_list.clear()
         for layer in reversed(self.project.layers):
             item = QListWidgetItem(layer.name)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsDragEnabled | Qt.ItemIsEditable)
             item.setCheckState(Qt.Checked if layer.visible else Qt.Unchecked)
             self.layer_list.addItem(item)
         self.layer_list.blockSignals(False)
@@ -2143,6 +2249,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Save failed:\n{e}")
             return
+        self._add_recent(str(self.project.project_dir))
         self.statusBar().showMessage(f"Saved → {self.project.project_dir}")
 
     # ---------- save-as / save-copy ----------

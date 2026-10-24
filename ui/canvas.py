@@ -39,31 +39,72 @@ class TextDialog(QDialog, AutoSizeMixin):
     def __init__(self, parent=None, existing=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Text" if existing else "Text")
-        self.setMinimumWidth(420)
-        self.text_edit = QLineEdit(); self.text_edit.setPlaceholderText("Type text…")
+        self.setMinimumWidth(460)
+
+        from PyQt5.QtWidgets import (
+            QPlainTextEdit, QLabel as QL, QFrame, QFontComboBox, QSpinBox,
+            QDialogButtonBox, QHBoxLayout, QVBoxLayout, QWidget
+        )
+        from PyQt5.QtGui import QFont, QPixmap, QPainter
+
+        # --- multi-line text ---
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setPlaceholderText("Type text… (Shift+Enter for newline)")
+        self.text_edit.setMinimumHeight(80)
+        if existing is not None:
+            self.text_edit.setPlainText(existing.text)
+
+        # --- font controls ---
         self.font_combo = QFontComboBox()
         self.size_spin = QSpinBox(); self.size_spin.setRange(6, 400); self.size_spin.setValue(48)
         self.size_spin.setSuffix(" px")
         if existing is not None:
-            self.text_edit.setText(existing.text)
             self.font_combo.setCurrentFont(existing.font)
             self.size_spin.setValue(existing.font.pointSize() or 48)
+
+        # --- live preview ---
+        self.preview = QL("Preview")
+        self.preview.setMinimumHeight(80)
+        self.preview.setStyleSheet("background:#1e1e1e; color:white; padding:8px; border:1px solid #333;")
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setWordWrap(True)
+
+        def _update_preview(*_):
+            f = self.font_combo.currentFont()
+            f.setPointSize(max(8, min(48, self.size_spin.value())))
+            self.preview.setFont(f)
+            txt = self.text_edit.toPlainText()
+            self.preview.setText(txt if txt else "(preview)")
+        self.font_combo.currentFontChanged.connect(_update_preview)
+        self.size_spin.valueChanged.connect(_update_preview)
+        self.text_edit.textChanged.connect(_update_preview)
+        _update_preview()
+
+        # --- buttons ---
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
         row = QHBoxLayout()
-        row.addWidget(QLabel("Font")); row.addWidget(self.font_combo)
+        row.addWidget(QL("Font")); row.addWidget(self.font_combo)
         row.addWidget(self.size_spin)
+
         v = QVBoxLayout(self)
-        v.addWidget(QLabel("Text:")); v.addWidget(self.text_edit)
-        v.addLayout(row); v.addWidget(buttons)
+        v.addWidget(QL("Text:"))
+        v.addWidget(self.text_edit)
+        v.addLayout(row)
+        v.addWidget(QL("Preview:"))
+        v.addWidget(self.preview)
+        v.addWidget(buttons)
 
         from PyQt5.QtCore import QTimer
-        QTimer.singleShot(0, lambda: self.auto_size(min_w=420, min_h=230))
+        QTimer.singleShot(0, lambda: self.auto_size(min_w=480, min_h=400))
 
     def values(self):
         f = self.font_combo.currentFont()
         f.setPointSize(self.size_spin.value())
-        return self.text_edit.text(), f
+        text = self.text_edit.toPlainText()
+        return text, f
 
 
 class Canvas(QGraphicsView):
@@ -106,6 +147,8 @@ class Canvas(QGraphicsView):
         self._shape_origin = None
         self._shape_preview: QPointF | None = None
         self.selected_shape = None
+        self._clipboard_shape = None
+        self.brush_hardness = 0.0   # 0 = hard, 1 = fully soft
         self.selected_layer = None
         self._resize_handle = None        # 'tl'|'tr'|'bl'|'br'|None
         self._resize_origin = None        # (x,y,w,h) at grab time
@@ -184,12 +227,33 @@ class Canvas(QGraphicsView):
     def wheelEvent(self, event):
         if not self.project:
             return super().wheelEvent(event)
-        f = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        # Ctrl+wheel = finer zoom (1.05x), plain wheel = 1.15x
+        precise = bool(event.modifiers() & Qt.ControlModifier)
+        step = 1.05 if precise else 1.15
+        f = step if event.angleDelta().y() > 0 else 1 / step
         self.scale(f, f)
         cb = getattr(self, "on_zoom_changed", None)
         if cb: cb()
 
     def keyPressEvent(self, event):
+        # shape clipboard
+        if event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_C:
+            if self.selected_shape is not None and self.selected_layer is not None:
+                import copy
+                self._clipboard_shape = copy.deepcopy(self.selected_shape)
+                print(f'[canvas] copied shape: {type(self.selected_shape).__name__}')
+                event.accept()
+                return
+        if event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_V:
+            self._paste_shape()
+            event.accept()
+            return
+        # delete selected shape
+        if event.key() == Qt.Key_Delete and not (event.modifiers() & Qt.ControlModifier):
+            if self.selected_shape is not None and self.selected_layer is not None:
+                self._delete_selected_shape()
+                event.accept()
+                return
         if event.key() == Qt.Key_Space and not event.isAutoRepeat():
             self._space_held = True; self.setCursor(Qt.OpenHandCursor)
             event.accept(); return
@@ -426,7 +490,7 @@ class Canvas(QGraphicsView):
             p.setBrush(self.brush_color); p.setPen(Qt.NoPen)
             p.drawRect(x - r // 2, y - r // 2, r, r)
             p.end(); return
-        self.active_layer.paint_dab(x, y, self.brush_radius, self.brush_color)
+        self._paint_dab_soft(x, y)
 
     def _erase_dab(self, x, y):
         if not self.active_layer.visible: return

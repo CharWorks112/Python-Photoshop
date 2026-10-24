@@ -28,7 +28,16 @@ class TextShape(ShapeObject):
     def _draw_content(self, painter: QPainter):
         painter.setFont(self.font)
         painter.setPen(self.color)
-        painter.drawText(int(self.x), int(self.y), self.text)
+        if '\n' in self.text:
+            # multi-line: draw using drawText with a bounding rect
+            from PyQt5.QtGui import QFontMetricsF
+            fm = QFontMetricsF(self.font)
+            line_h = fm.height()
+            lines = self.text.split('\n')
+            for i, line in enumerate(lines):
+                painter.drawText(int(self.x), int(self.y + i * line_h), line)
+        else:
+            painter.drawText(int(self.x), int(self.y), self.text)
 
     def _content_image(self) -> "QImage":
         """Rasterize just the text into a QImage for glow blurring."""

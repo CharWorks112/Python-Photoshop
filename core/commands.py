@@ -243,3 +243,23 @@ class ResizeShapeCommand(QUndoCommand):
 
     def undo(self):
         self._apply(self.before)
+
+
+class DeleteShapeCommand(QUndoCommand):
+    """Remove a specific shape from a layer."""
+    def __init__(self, layer, index, on_change):
+        super().__init__("Delete Shape")
+        self.layer = layer
+        self.index = index
+        self.on_change = on_change
+        self.removed = None
+
+    def redo(self):
+        if 0 <= self.index < len(self.layer.shapes):
+            self.removed = self.layer.shapes.pop(self.index)
+            self.on_change()
+
+    def undo(self):
+        if self.removed is not None:
+            self.layer.shapes.insert(self.index, self.removed)
+            self.on_change()
