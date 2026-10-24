@@ -27,6 +27,7 @@ TOOL_ERASER = "eraser"
 TOOL_LASSO  = "lasso"
 TOOL_BUCKET = "bucket"
 TOOL_TEXT   = "text"
+TOOL_TEXT3D = "text3d"
 TOOL_GRAB   = "grab"
 TOOL_IMAGE  = "image"
 TOOL_BLUR   = "blur"
@@ -105,6 +106,109 @@ class TextDialog(QDialog, AutoSizeMixin):
         f.setPointSize(self.size_spin.value())
         text = self.text_edit.toPlainText()
         return text, f
+
+
+
+
+class Text3DDialog(QDialog, AutoSizeMixin):
+    """Dialog for creating a 3D text shape."""
+    def __init__(self, parent=None, existing=None):
+        super().__init__(parent)
+        self.setWindowTitle("3D Text")
+        self.setMinimumWidth(460)
+
+        from PyQt5.QtWidgets import (
+            QPlainTextEdit, QLabel as QL, QFontComboBox, QSpinBox,
+            QDialogButtonBox, QHBoxLayout, QVBoxLayout, QPushButton,
+            QColorDialog
+        )
+        from PyQt5.QtGui import QColor
+
+        self.text_edit = QPlainTextEdit()
+        self.text_edit.setPlaceholderText("Type text…")
+        self.text_edit.setMinimumHeight(60)
+        if existing is not None:
+            self.text_edit.setPlainText(existing.text)
+
+        self.font_combo = QFontComboBox()
+        self.size_spin = QSpinBox(); self.size_spin.setRange(6, 400); self.size_spin.setValue(48)
+        self.size_spin.setSuffix(" px")
+        if existing is not None:
+            self.font_combo.setCurrentFont(existing.font)
+            self.size_spin.setValue(existing.font.pointSize() or 48)
+
+        self.depth_spin = QSpinBox(); self.depth_spin.setRange(1, 40); self.depth_spin.setValue(
+            existing.depth if existing is not None else 8)
+        self.depth_spin.setSuffix(" px")
+
+        self.light_spin = QSpinBox(); self.light_spin.setRange(0, 359)
+        self.light_spin.setValue(existing.light_angle if existing is not None else 45)
+        self.light_spin.setSuffix("°")
+
+        self.shadow_spin = QSpinBox(); self.shadow_spin.setRange(0, 40)
+        self.shadow_spin.setValue(existing.shadow_offset if existing is not None else 6)
+        self.shadow_spin.setSuffix(" px")
+
+        # extrusion color button
+        self._ext_color = (QColor(existing.extrusion_color) if existing is not None
+                           else QColor("#000000"))
+        self.ext_btn = QPushButton(self._ext_color.name())
+        self._update_ext_btn()
+        self.ext_btn.clicked.connect(self._pick_ext_color)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        row1 = QHBoxLayout()
+        row1.addWidget(QL("Font")); row1.addWidget(self.font_combo); row1.addWidget(self.size_spin)
+
+        row2 = QHBoxLayout()
+        row2.addWidget(QL("Depth")); row2.addWidget(self.depth_spin)
+        row2.addWidget(QL("Light")); row2.addWidget(self.light_spin)
+        row2.addWidget(QL("Shadow")); row2.addWidget(self.shadow_spin)
+
+        row3 = QHBoxLayout()
+        row3.addWidget(QL("Extrusion color")); row3.addWidget(self.ext_btn); row3.addStretch()
+
+        v = QVBoxLayout(self)
+        v.addWidget(QL("Text:"))
+        v.addWidget(self.text_edit)
+        v.addLayout(row1)
+        v.addLayout(row2)
+        v.addLayout(row3)
+        v.addWidget(buttons)
+
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self.auto_size(min_w=480, min_h=380))
+
+    def _pick_ext_color(self):
+        from PyQt5.QtWidgets import QColorDialog
+        from PyQt5.QtGui import QColor
+        c = QColorDialog.getColor(self._ext_color, self, "Extrusion Color")
+        if c.isValid():
+            self._ext_color = c
+            self._update_ext_btn()
+
+    def _update_ext_btn(self):
+        c = self._ext_color
+        self.ext_btn.setStyleSheet(
+            f"background-color:{c.name()};"
+            f"color:{'white' if c.lightness() < 128 else 'black'};"
+        )
+        self.ext_btn.setText(c.name())
+
+    def values(self):
+        f = self.font_combo.currentFont()
+        f.setPointSize(self.size_spin.value())
+        return {
+            "text": self.text_edit.toPlainText(),
+            "font": f,
+            "depth": self.depth_spin.value(),
+            "light_angle": self.light_spin.value(),
+            "shadow_offset": self.shadow_spin.value(),
+            "extrusion_color": self._ext_color,
+        }
 
 
 class Canvas(QGraphicsView):
@@ -312,6 +416,8 @@ class Canvas(QGraphicsView):
                 self._bucket_fill(self._map(event)); return
             if t == TOOL_TEXT:
                 self._place_text(self._map(event)); return
+            if t == TOOL_TEXT3D:
+                self._place_text3d(self._map(event)); return
             if t == TOOL_GRAB:
                 self._begin_grab(self._map(event)); return
             if t == TOOL_IMAGE:
@@ -785,6 +891,53 @@ class Canvas(QGraphicsView):
         self._refresh()
 
     # ---------- text (as vector shape on its own layer) ----------
+    def _place_text3d(self, pt):
+        sounds.play('text')
+        dlg = Text3DDialog(self)
+        if dlg.exec_() != dlg.Accepted:
+            return
+        v = dlg.values()
+        if not v["text"]:
+            return
+
+        # ensure shape layer
+        if not isinstance(self.active_layer, ShapeLayer):
+            shape_layer = ShapeLayer(
+                f"3D Text {sum(1 for l in self.project.layers if isinstance(l, ShapeLayer)) + 1}",
+                self.project.width, self.project.height)
+            self.project.layers.append(shape_layer)
+            self.active_layer = shape_layer
+            self._notify_layers_changed()
+            try:
+                self._emit_layer_added(shape_layer)
+            except Exception:
+                pass
+
+        from core.shape_layer import Text3DShape
+        from core.commands import AddShapeCommand
+
+        shape = Text3DShape(
+            pt.x(), pt.y(), v["text"], v["font"], self.brush_color,
+            depth=v["depth"],
+            extrusion_color=v["extrusion_color"],
+            light_angle=v["light_angle"],
+            shadow_offset=v["shadow_offset"],
+        )
+        self.undo_stack.push(AddShapeCommand(self.active_layer, shape,
+                                             on_change=self._refresh))
+
+        if self.on_shape_added and not self._applying_remote:
+            try:
+                li = self.project.layers.index(self.active_layer)
+                si = len(self.active_layer.shapes) - 1
+                self.on_shape_added(li, si, shape.to_dict())
+            except Exception as e:
+                print(f'[collab] 3d text shape_add failed: {e}')
+
+        self.selected_layer = self.active_layer
+        self.selected_shape = shape
+        self._refresh()
+
     def _place_text(self, pt):
         sounds.play('text')
         dlg = TextDialog(self)

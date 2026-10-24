@@ -179,7 +179,9 @@ class ShapeLayer:
         layer.opacity = data.get("opacity", 1.0)
         from core.image_shape import ImageShape
         for s in data.get("shapes", []):
-            if s["type"] == "text":
+            if s["type"] == "text3d":
+                layer.add(Text3DShape.from_dict(s, project_dir))
+            elif s["type"] == "text":
                 f = QFont(s["font"]["family"], s["font"]["size"])
                 f.setBold(s["font"].get("bold", False))
                 f.setItalic(s["font"].get("italic", False))
@@ -198,3 +200,131 @@ class ShapeLayer:
     def rasterize(self) -> "QImage":
         """Return this shape layer rendered to a QImage (for rasterize/erase)."""
         return self.render_to_image()
+
+
+class Text3DShape(TextShape):
+    """Text with 3D extrusion. Renders layered copies + shadow + highlight."""
+
+    def __init__(self, x, y, text, font, color,
+                 glow_radius=0, glow_color=None,
+                 depth: int = 8,
+                 extrusion_color: QColor | None = None,
+                 light_angle: int = 45,
+                 shadow_offset: int = 6):
+        super().__init__(x, y, text, font, color, glow_radius, glow_color)
+        self.depth = depth
+        self.extrusion_color = QColor(extrusion_color) if extrusion_color else QColor(0, 0, 0)
+        self.light_angle = light_angle
+        self.shadow_offset = shadow_offset
+
+    # ---- render helpers ----
+    def _extrusion_vector(self):
+        """Return (dx, dy) per depth step based on light angle."""
+        import math
+        rad = math.radians(self.light_angle)
+        return -math.cos(rad), -math.sin(rad)
+
+    def render(self, painter: QPainter):
+        import math
+        from PyQt5.QtGui import QFontMetricsF, QPen
+
+        # glow first (if any)
+        if self.glow_radius > 0 and self.glow_color is not None:
+            try:
+                from core.glow import blurred_silhouette
+                content = self._content_image()
+                halo = blurred_silhouette(content, self.glow_radius, self.glow_color)
+                if not halo.isNull():
+                    from PyQt5.QtGui import QFontMetricsF
+                    fm = QFontMetricsF(self.font)
+                    margin = max(4, self.glow_radius * 2)
+                    base_x = self.x - 2 - margin
+                    base_y = self.y - fm.ascent() - 2 - margin
+                    painter.drawImage(int(base_x), int(base_y), halo)
+            except Exception:
+                pass
+
+        dx_unit, dy_unit = self._extrusion_vector()
+
+        # 1) drop shadow
+        if self.shadow_offset > 0:
+            shadow_color = QColor(0, 0, 0, 90)
+            painter.save()
+            painter.setFont(self.font)
+            painter.setPen(shadow_color)
+            ox = int(self.x + self.shadow_offset)
+            oy = int(self.y + self.shadow_offset)
+            lines = self.text.split("\n")
+            fm = QFontMetricsF(self.font)
+            line_h = fm.height()
+            for i, line in enumerate(lines):
+                painter.drawText(ox, oy + int(i * line_h), line)
+            painter.restore()
+
+        # 2) extrusion layers (back to front)
+        extrusion_shade = QColor(self.extrusion_color)
+        for step in range(self.depth, 0, -1):
+            # darken further away
+            shade = 0.4 + 0.6 * (1 - step / max(1, self.depth))
+            c = QColor(
+                int(extrusion_shade.red() * shade),
+                int(extrusion_shade.green() * shade),
+                int(extrusion_shade.blue() * shade),
+                extrusion_shade.alpha(),
+            )
+            painter.save()
+            painter.setFont(self.font)
+            painter.setPen(c)
+            ox = int(self.x + dx_unit * step)
+            oy = int(self.y + dy_unit * step)
+            lines = self.text.split("\n")
+            fm = QFontMetricsF(self.font)
+            line_h = fm.height()
+            for i, line in enumerate(lines):
+                painter.drawText(ox, oy + int(i * line_h), line)
+            painter.restore()
+
+        # 3) top face (front color)
+        painter.save()
+        painter.setFont(self.font)
+        painter.setPen(self.color)
+        lines = self.text.split("\n")
+        fm = QFontMetricsF(self.font)
+        line_h = fm.height()
+        for i, line in enumerate(lines):
+            painter.drawText(int(self.x), int(self.y + i * line_h), line)
+        painter.restore()
+
+    # ---- persistence ----
+    def to_dict(self):
+        d = super().to_dict()
+        d.update({
+            "type": "text3d",
+            "depth": self.depth,
+            "extrusion_color": self.extrusion_color.name(QColor.HexArgb),
+            "light_angle": self.light_angle,
+            "shadow_offset": self.shadow_offset,
+        })
+        return d
+
+    @classmethod
+    def from_dict(cls, d, project_dir=None):
+        from PyQt5.QtGui import QFont, QColor
+        f = QFont(d["font"]["family"], d["font"]["size"])
+        f.setBold(d["font"].get("bold", False))
+        f.setItalic(d["font"].get("italic", False))
+        gc = QColor(d["glow_color"]) if d.get("glow_color") else None
+        ec = QColor(d["extrusion_color"]) if d.get("extrusion_color") else None
+        return cls(d["x"], d["y"], d["text"], f, QColor(d["color"]),
+                   d.get("glow_radius", 0), gc,
+                   d.get("depth", 8),
+                   ec,
+                   d.get("light_angle", 45),
+                   d.get("shadow_offset", 6))
+
+    def to_wire(self):
+        return self.to_dict()
+
+    @classmethod
+    def from_wire(cls, d, project_dir=None):
+        return cls.from_dict(d, project_dir)

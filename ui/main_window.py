@@ -19,7 +19,8 @@ from core.settings import get_settings
 from core.commands import OpacityCommand
 from ui.canvas import (TOOL_BRUSH, TOOL_PENCIL, TOOL_ERASER, TOOL_LASSO,
                        TOOL_TEXT, TOOL_BUCKET, TOOL_GRAB, TOOL_IMAGE,
-                       TOOL_BLUR, TOOL_PICKER, TOOL_SHAPE, TOOL_3D_BRUSH)
+                       TOOL_BLUR, TOOL_PICKER, TOOL_SHAPE, TOOL_3D_BRUSH,
+                       TOOL_TEXT3D)
 from ui.canvas import Canvas
 from core.project import Project
 from core.layer import PixelLayer
@@ -378,6 +379,7 @@ class MainWindow(QMainWindow):
             ("Lasso",  TOOL_LASSO),
             ("Bucket", TOOL_BUCKET),
             ("Text",   TOOL_TEXT),
+            ("3D Text", TOOL_TEXT3D),
             ("Image",  TOOL_IMAGE),
             ("Blur",   TOOL_BLUR),
             ("Picker", TOOL_PICKER),
@@ -1604,6 +1606,9 @@ class MainWindow(QMainWindow):
                     st = sd.get("type")
                     if st == "image":
                         shape = ImageShape.from_wire(sd)
+                    elif st == "text3d":
+                        from core.shape_layer import Text3DShape
+                        shape = Text3DShape.from_dict(sd, None)
                     elif st == "text":
                         f = QFont(sd["font"]["family"], sd["font"]["size"])
                         gc = QColor(sd["glow_color"]) if sd.get("glow_color") else None
