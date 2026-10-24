@@ -44,7 +44,7 @@ ROOT          = Path(__file__).resolve().parent
 STATE_FILE    = ROOT / ".updater_state.json"
 MANIFEST_FILE = ROOT / ".updater_manifest.local.json"
 NOTIFY_PORT   = 51002
-POLL_INTERVAL = 5
+POLL_INTERVAL = 15   # seconds — checks GitHub every 15s
 
 # Files we always fetch fresh
 MANAGED_FILES = [
