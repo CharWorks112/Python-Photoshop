@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+.venv/
+
+# Runtime data (user projects, autosaves)
+docs/
+*.autosave.*
+.session.lock
+
+# Sounds cache
+*.wav
+
+# User config
+*.json
+!project.json
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Backups
+*_backup_*/
