@@ -48,6 +48,7 @@ POLL_INTERVAL = 15   # seconds — checks GitHub every 15s
 
 # Files we always fetch fresh
 MANAGED_FILES = [
+    "example.txt",
     "main.py", "updater.py", "requirements.txt",
     "core/layer.py", "core/project.py", "core/shape_layer.py",
     "core/image_shape.py", "core/shape_objects.py", "core/sounds.py",
