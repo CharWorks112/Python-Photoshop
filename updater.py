@@ -1,16 +1,10 @@
-"""Updater — checks GitHub once on launch, downloads any changed files, then
-runs main.py. No background polling, no supervisor.
+"""Updater — downloads every managed file from GitHub on launch, then runs main.py.
+No SHA comparison, no cache-busting, no 'up to date' checks. Just fetch and go."""
 
-Usage:
-    python updater.py             # check for updates, then launch
-    python updater.py --no-update # skip check, launch immediately
-"""
-
-import hashlib
-import json
+import datetime
 import subprocess
 import sys
-import datetime
+import time
 from pathlib import Path
 
 try:
@@ -42,8 +36,7 @@ GITHUB_REPO   = "Python-Photoshop"
 GITHUB_BRANCH = "main"
 RAW_BASE      = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}"
 
-ROOT       = Path(__file__).resolve().parent
-STATE_FILE = ROOT / ".updater_state.json"
+ROOT = Path(__file__).resolve().parent
 
 MANAGED_FILES = [
     "example.txt",
@@ -68,23 +61,15 @@ MANAGED_FILES = [
 REQUIRED_MODULES = ["PyQt5", "numpy", "zeroconf"]
 
 
-def load_state():
-    if STATE_FILE.is_file():
-        try:
-            return json.loads(STATE_FILE.read_text())
-        except Exception:
-            pass
-    return {}
-
-
-def save_state(state):
-    STATE_FILE.write_text(json.dumps(state, indent=2))
-
-
-def fetch(url):
-    """Fetch URL → bytes, or None on 404/error."""
+def fetch(url, bust_cache=True):
+    """GET a URL. Returns bytes or None on 404/error. Cache-busted by default."""
+    if bust_cache:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}cb={int(time.time() * 1000)}"
     try:
-        r = requests.get(url, timeout=15, headers={"User-Agent": "pp-updater"})
+        r = requests.get(url, timeout=15,
+                         headers={"User-Agent": "pp-updater",
+                                  "Cache-Control": "no-cache"})
         if r.status_code == 404:
             return None
         r.raise_for_status()
@@ -127,33 +112,37 @@ def install_dependencies(missing):
                            "--break-system-packages", *missing])
 
 
-def sync_files():
-    """Fetch every managed file. Returns count of updated files."""
-    state = load_state()
-    n = 0
+def download_all() -> tuple[int, int, int]:
+    """Download every managed file, no comparisons.
+    Returns (downloaded, skipped, failed)."""
+    ok = skipped = failed = 0
     for rel in MANAGED_FILES:
         content = fetch(f"{RAW_BASE}/{rel}")
         if content is None:
-            continue
-        h = hashlib.sha256(content).hexdigest()
-        if state.get(rel) == h:
+            failed += 1
+            print(f"[updater]   ✗ {rel} (not found or error)")
             continue
         try:
             local = ROOT / rel
             local.parent.mkdir(parents=True, exist_ok=True)
+            # Compare with existing bytes to avoid rewriting identical files (harmless)
+            if local.is_file():
+                try:
+                    if local.read_bytes() == content:
+                        skipped += 1
+                        continue
+                except Exception:
+                    pass
             local.write_bytes(content)
-            state[rel] = h
-            n += 1
-            print(f"[updater]   updated: {rel}")
+            ok += 1
+            print(f"[updater]   ↓ {rel}")
         except Exception as e:
-            print(f"[updater]   FAILED {rel}: {e}")
-    save_state(state)
-    return n
+            failed += 1
+            print(f"[updater]   ✗ {rel} (write failed: {e})")
+    return ok, skipped, failed
 
 
 def main():
-    no_update = "--no-update" in sys.argv
-
     print(f"[updater] Python Photoshop updater — {datetime.datetime.now().strftime('%H:%M:%S')}")
     print(f"[updater] Dir: {ROOT}")
 
@@ -165,19 +154,12 @@ def main():
 
     missing = check_dependencies()
     if missing:
-        print(f"[updater] Installing missing: {', '.join(missing)}")
+        print(f"[updater] Installing: {', '.join(missing)}")
         install_dependencies(missing)
 
-    if not no_update:
-        print("[updater] Checking GitHub for updates…")
-        try:
-            n = sync_files()
-            print(f"[updater] ✅ {n} file(s) updated" if n else "[updater] ✅ Already up to date")
-        except Exception as e:
-            print(f"[updater] ⚠ Update check failed: {e}")
-            print("[updater] Launching with current files anyway…")
-    else:
-        print("[updater] Skipping update (--no-update)")
+    print("[updater] Downloading all files from GitHub…")
+    ok, skipped, failed = download_all()
+    print(f"[updater] ✅ Downloaded {ok}, unchanged {skipped}, failed {failed}")
 
     print("[updater] Launching main.py…")
     try:
