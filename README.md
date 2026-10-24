@@ -4,6 +4,12 @@ A PyQt5-based image editor with **real-time LAN collaboration**, written in Pyth
 
 ![Python Photoshop](assets/splash.png)
 
+<p align="center"><em>Splash banner</em></p>
+
+![Python Photoshop running](screenshot.png)
+
+<p align="center"><em>The editor in action</em></p>
+
 ---
 
 ## ✨ Features
@@ -40,6 +46,8 @@ A PyQt5-based image editor with **real-time LAN collaboration**, written in Pyth
 
 ## 📥 Install
 
-### Arch Linux (recommended)
+### One-line installer (any OS)
 ```bash
-sudo pacman -S python-pyqt5 qt5-multimedia python-zeroconf python-numpy imagemagick librsvg
+mkdir -p ~/PythonPhotoshop && cd ~/PythonPhotoshop
+curl -O https://raw.githubusercontent.com/CharWorks112/Python-Photoshop/main/updater.py
+python updater.py
