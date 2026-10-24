@@ -1,4 +1,3 @@
-cat > ~/python_photoshop/README.md << 'EOF'
 # Python Photoshop
 
 A PyQt5-based image editor with **real-time LAN collaboration**, written in Python. Not affiliated with Adobe — just inspired by the layout.
