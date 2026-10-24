@@ -580,6 +580,32 @@ class Canvas(QGraphicsView):
             except Exception:
                 pass
 
+    def _paint_dab_soft(self, x, y):
+        """Paint a dab with hardness falloff. hardness=0 → solid, 1 → soft edge."""
+        from PyQt5.QtGui import QRadialGradient, QBrush, QPen
+        if not self.active_layer.visible:
+            return
+        h = max(0.0, min(1.0, getattr(self, "brush_hardness", 0.0)))
+        if h <= 0.01:
+            # hard brush — original behaviour
+            self.active_layer.paint_dab(x, y, self.brush_radius, self.brush_color)
+            return
+        p = QPainter(self.active_layer.image)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setPen(Qt.NoPen)
+        r = self.brush_radius
+        grad = QRadialGradient(x, y, r, x, y)
+        solid_edge = 1.0 - h
+        c_center = QColor(self.brush_color)
+        c_edge = QColor(self.brush_color)
+        c_edge.setAlpha(0)
+        grad.setColorAt(0.0, c_center)
+        grad.setColorAt(solid_edge, c_center)
+        grad.setColorAt(1.0, c_edge)
+        p.setBrush(QBrush(grad))
+        p.drawEllipse(x - r, y - r, r * 2, r * 2)
+        p.end()
+
     def _paint_at(self, pt):
         x, y = int(pt.x()), int(pt.y())
         if self.tool == TOOL_ERASER:
