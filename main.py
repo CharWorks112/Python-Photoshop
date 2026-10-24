@@ -64,6 +64,15 @@ def main() -> int:
 
     report(85, "Building interface…")
     win = MainWindow()
+
+    # Restore session if launched by updater after an update
+    if "--restore-session" in sys.argv:
+        from core import session_backup
+        try:
+            if session_backup.load_session(win):
+                win.statusBar().showMessage("Session restored after update")
+        except Exception as e:
+            print(f"[main] session restore failed: {e}")
     if not imagemagick.is_available():
         win.statusBar().showMessage(
             "⚠ ImageMagick not found — effects and image import will fail.")

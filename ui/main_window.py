@@ -42,6 +42,7 @@ class MainWindow(QMainWindow):
         self._opacity_before = 1.0
         self._dirty = False
         self._collab_session = None
+        self._start_update_listener()
         self._open_project_dirs = set()
         self.setWindowTitle("Python Photoshop")
         self.resize(1200, 800)
@@ -1689,6 +1690,142 @@ class MainWindow(QMainWindow):
                 self._chat_dock = None
         except Exception:
             pass
+
+    # ---------- update listener ----------
+    def _start_update_listener(self):
+        import socket, threading
+        from PyQt5.QtCore import QMetaObject, Qt, Q_ARG
+
+        def _listen():
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                srv.bind(("127.0.0.1", 51002))
+                srv.listen(1)
+            except OSError:
+                return
+            while True:
+                try:
+                    conn, _ = srv.accept()
+                    data = conn.recv(64)
+                    conn.close()
+                    if b"UPDATE" in data:
+                        QMetaObject.invokeMethod(
+                            self, "_on_update_signal",
+                            Qt.QueuedConnection)
+                except Exception:
+                    return
+
+        threading.Thread(target=_listen, daemon=True).start()
+
+    def _on_update_signal(self):
+        from PyQt5.QtWidgets import QMessageBox
+        from core import session_backup
+
+        r = QMessageBox.question(
+            self, "Update Available",
+            "A new version of Python Photoshop is ready.\n\n"
+            "Your current session will be saved and restored automatically.\n\n"
+            "Update now?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if r != QMessageBox.Yes:
+            return
+
+        # 1. Save unsaved documents
+        if self._dirty and self.project is not None:
+            r2 = QMessageBox.question(
+                self, "Save Changes",
+                f"'{self.project.name}' has unsaved changes. Save before updating?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            )
+            if r2 == QMessageBox.Cancel:
+                return
+            if r2 == QMessageBox.Save:
+                try:
+                    self.project.save_meta()
+                except Exception as e:
+                    QMessageBox.critical(self, "Save failed", str(e))
+                    return
+
+        # 2. Write session backup
+        ok = session_backup.save_session(self)
+        if not ok:
+            QMessageBox.critical(self, "Update",
+                "Could not save session backup. Update aborted.")
+            return
+
+        # 3. Close the window (updater will relaunch with --restore-session)
+        self.statusBar().showMessage("Updating — please wait…")
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(200, self.close)
+
+    # ---------- update listener ----------
+    def _start_update_listener(self):
+        import socket, threading
+        from PyQt5.QtCore import QMetaObject, Qt
+
+        def _listen():
+            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                srv.bind(("127.0.0.1", 51002))
+                srv.listen(1)
+            except OSError:
+                return
+            while True:
+                try:
+                    conn, _ = srv.accept()
+                    data = conn.recv(64)
+                    conn.close()
+                    if b"UPDATE" in data:
+                        QMetaObject.invokeMethod(self, "_on_update_signal",
+                                                 Qt.QueuedConnection)
+                except Exception:
+                    return
+
+        threading.Thread(target=_listen, daemon=True).start()
+
+    def _on_update_signal(self):
+        from PyQt5.QtWidgets import QMessageBox
+        from PyQt5.QtCore import QTimer
+
+        r = QMessageBox.question(
+            self, "Update Available",
+            "A new version of Python Photoshop is ready.\n\n"
+            "Your current session will be saved and restored automatically.\n\n"
+            "Update now?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if r != QMessageBox.Yes:
+            return
+
+        # 1. Save unsaved documents
+        if self._dirty and self.project is not None:
+            r2 = QMessageBox.question(
+                self, "Save Changes",
+                f"'{self.project.name}' has unsaved changes. Save before updating?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            )
+            if r2 == QMessageBox.Cancel:
+                return
+            if r2 == QMessageBox.Save:
+                try:
+                    self.project.save_meta()
+                except Exception as e:
+                    QMessageBox.critical(self, "Save failed", str(e))
+                    return
+
+        # 2. Write session backup
+        ok = session_backup.save_session(self)
+        if not ok:
+            QMessageBox.critical(self, "Update",
+                "Could not save session backup. Update aborted.")
+            return
+
+        # 3. Close the window — updater will relaunch with --restore-session
+        self.statusBar().showMessage("Updating — please wait…")
+        QTimer.singleShot(200, self.close)
 
     def _refresh_after_tab_switch(self):
         pass
