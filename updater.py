@@ -1,12 +1,15 @@
-"""Updater + supervisor — polls GitHub via raw CDN (no rate limit),
-every 5 seconds, logs each check, hot-updates without losing session."""
+"""Updater — checks GitHub once on launch, downloads any changed files, then
+runs main.py. No background polling, no supervisor.
+
+Usage:
+    python updater.py             # check for updates, then launch
+    python updater.py --no-update # skip check, launch immediately
+"""
 
 import hashlib
 import json
-import socket
 import subprocess
 import sys
-import time
 import datetime
 from pathlib import Path
 
@@ -38,18 +41,15 @@ GITHUB_OWNER  = "CharWorks112"
 GITHUB_REPO   = "Python-Photoshop"
 GITHUB_BRANCH = "main"
 RAW_BASE      = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}"
-MANIFEST_URL  = f"{RAW_BASE}/.updater_manifest.json"   # generated file listing all file hashes
 
-ROOT          = Path(__file__).resolve().parent
-STATE_FILE    = ROOT / ".updater_state.json"
-MANIFEST_FILE = ROOT / ".updater_manifest.local.json"
-NOTIFY_PORT   = 51002
-POLL_INTERVAL = 15   # seconds — checks GitHub every 15s
+ROOT       = Path(__file__).resolve().parent
+STATE_FILE = ROOT / ".updater_state.json"
 
-# Files we always fetch fresh
 MANAGED_FILES = [
     "example.txt",
-    "main.py", "updater.py", "requirements.txt",
+    "main.py",
+    "updater.py",
+    "requirements.txt",
     "core/layer.py", "core/project.py", "core/shape_layer.py",
     "core/image_shape.py", "core/shape_objects.py", "core/sounds.py",
     "core/imagemagick.py", "core/export.py", "core/fill.py",
@@ -81,8 +81,8 @@ def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
-def fetch(url) -> bytes | None:
-    """Fetch a URL; return None on 404."""
+def fetch(url):
+    """Fetch URL → bytes, or None on 404/error."""
     try:
         r = requests.get(url, timeout=15, headers={"User-Agent": "pp-updater"})
         if r.status_code == 404:
@@ -127,23 +127,19 @@ def install_dependencies(missing):
                            "--break-system-packages", *missing])
 
 
-def poll_and_update() -> int:
-    """Check every MANAGED_FILES file against GitHub raw. Returns number updated."""
+def sync_files():
+    """Fetch every managed file. Returns count of updated files."""
     state = load_state()
     n = 0
-
     for rel in MANAGED_FILES:
-        url = f"{RAW_BASE}/{rel}"
-        content = fetch(url)
+        content = fetch(f"{RAW_BASE}/{rel}")
         if content is None:
-            continue  # file doesn't exist upstream — skip
-
+            continue
         h = hashlib.sha256(content).hexdigest()
         if state.get(rel) == h:
-            continue  # unchanged
-
-        local = ROOT / rel
+            continue
         try:
+            local = ROOT / rel
             local.parent.mkdir(parents=True, exist_ok=True)
             local.write_bytes(content)
             state[rel] = h
@@ -151,47 +147,18 @@ def poll_and_update() -> int:
             print(f"[updater]   updated: {rel}")
         except Exception as e:
             print(f"[updater]   FAILED {rel}: {e}")
-
     save_state(state)
     return n
 
 
-class AppSupervisor:
-    def __init__(self):
-        self.proc = None
-        self.restore_session = False
+def main():
+    no_update = "--no-update" in sys.argv
 
-    def start(self):
-        args = [sys.executable, str(ROOT / "main.py")]
-        if self.restore_session:
-            args.append("--restore-session")
-            self.restore_session = False
-        print(f"[updater] Launching: {' '.join(args)}")
-        self.proc = subprocess.Popen(args, cwd=str(ROOT))
-
-    def request_update(self):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(2)
-            s.connect(("127.0.0.1", NOTIFY_PORT))
-            s.sendall(b"UPDATE\n")
-            s.close()
-            print("[updater] Sent UPDATE signal to app")
-        except Exception as e:
-            print(f"[updater] Signal failed: {e} — force killing app")
-            try:
-                self.proc.kill()
-            except Exception:
-                pass
-
-
-def main() -> int:
-    print(f"[updater] Supervisor starting at {datetime.datetime.now().strftime('%H:%M:%S')}")
+    print(f"[updater] Python Photoshop updater — {datetime.datetime.now().strftime('%H:%M:%S')}")
     print(f"[updater] Dir: {ROOT}")
-    print(f"[updater] Poll interval: {POLL_INTERVAL}s (no GitHub API — raw CDN only, no rate limit)")
 
     if not (ROOT / "main.py").is_file():
-        print("[updater] ❌ main.py missing — this installer requires an existing install")
+        print("[updater] ❌ main.py missing.")
         print("[updater] Manual install:")
         print("[updater]   git clone https://github.com/CharWorks112/Python-Photoshop.git")
         return 1
@@ -201,56 +168,23 @@ def main() -> int:
         print(f"[updater] Installing missing: {', '.join(missing)}")
         install_dependencies(missing)
 
-    print("[updater] Initial sync…")
-    n = poll_and_update()
-    print(f"[updater] ✅ {n} file(s) updated at startup")
+    if not no_update:
+        print("[updater] Checking GitHub for updates…")
+        try:
+            n = sync_files()
+            print(f"[updater] ✅ {n} file(s) updated" if n else "[updater] ✅ Already up to date")
+        except Exception as e:
+            print(f"[updater] ⚠ Update check failed: {e}")
+            print("[updater] Launching with current files anyway…")
+    else:
+        print("[updater] Skipping update (--no-update)")
 
-    sup = AppSupervisor()
-    sup.start()
-    last_check = time.time()
-
-    while True:
-        time.sleep(1)
-
-        if sup.proc is None or sup.proc.poll() is not None:
-            print("[updater] App closed. Supervisor exiting.")
-            return 0
-
-        if time.time() - last_check < POLL_INTERVAL:
-            continue
-        last_check = time.time()
-
-        stamp = datetime.datetime.now().strftime("%H:%M:%S")
-        print(f"[updater] 🔍 Checking for updates… {stamp}")
-
-        n = poll_and_update()
-
-        if n == 0:
-            print(f"[updater] ✅ No updates")
-            continue
-
-        print(f"[updater] 🎉 {n} update(s) applied")
-        sup.request_update()
-
-        start = time.time()
-        while sup.proc.poll() is None and time.time() - start < 30:
-            time.sleep(0.5)
-
-        if sup.proc.poll() is None:
-            print("[updater] App didn't close — force killing")
-            try:
-                sup.proc.kill()
-            except Exception:
-                pass
-            sup.proc.wait()
-
-        sup.restore_session = True
-        sup.start()
+    print("[updater] Launching main.py…")
+    try:
+        return subprocess.call([sys.executable, str(ROOT / "main.py")], cwd=str(ROOT))
+    except KeyboardInterrupt:
+        return 0
 
 
 if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        print("\n[updater] Interrupted")
-        sys.exit(0)
+    sys.exit(main())
