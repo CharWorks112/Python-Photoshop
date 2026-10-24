@@ -24,6 +24,7 @@ class CollabSession(QObject):
     statusMessage   = pyqtSignal(str)
     structureMessage = pyqtSignal(dict)
     chatReceived    = pyqtSignal(str, str)   # name, text
+    chatBubble      = pyqtSignal(str, str)   # name, text — draws bubble at cursor
 
     def __init__(self, role: str, my_name: str, project_name: str,
                  width: int, height: int, parent=None):
@@ -198,8 +199,10 @@ class CollabSession(QObject):
                         int(msg.get("x", 0)),
                         int(msg.get("y", 0)))
                 elif t == "chat":
-                    self.chatReceived.emit(str(msg.get("name", "?")),
-                                           str(msg.get("text", "")))
+                    _n = str(msg.get("name", "?"))
+                    _t = str(msg.get("text", ""))
+                    self.chatReceived.emit(_n, _t)
+                    self.chatBubble.emit(_n, _t)
                 elif t in ("layer_add", "layer_del", "layer_reorder",
                            "layer_visible", "layer_opacity", "layer_rasterize",
                            "shape_add", "shape_edit", "shape_delete"):
@@ -227,6 +230,7 @@ class CollabSession(QObject):
             chat_name = str(msg.get("name", name))
             text = str(msg.get("text", ""))[:1000]
             self.chatReceived.emit(chat_name, text)
+            self.chatBubble.emit(chat_name, text)
             self._broadcast({"type": "chat", "name": chat_name, "text": text},
                             exclude=sender)
             return

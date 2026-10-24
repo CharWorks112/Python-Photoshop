@@ -87,6 +87,7 @@ class Canvas(QGraphicsView):
         self.on_layer_added = None     # callback(layer_idx, layer_dict)
         self.on_shape_edited = None    # callback(layer_idx, shape_idx, shape_dict)
         self._remote_cursor_items = {}   # name -> (polygon_item, label_item)
+        self._remote_cursor_pos = {}     # name -> (x, y)
         self._last_remote_hash = None
         self.active_layer = None
         self.tool = TOOL_BRUSH
@@ -946,27 +947,57 @@ class Canvas(QGraphicsView):
         self.setBackgroundBrush(QColor(color))
 
     # ---------- collab hooks ----------
-    def apply_remote_cursor(self, name: str, x: int, y: int):
-        """Draw a name-tagged pointer. Reuses one item pair per peer so
-        we never leak items or leave trails across _refresh()."""
+    def apply_remote_cursor(self, name: str, x: int, y: int, message: str | None = None):
+        """Draw a big pointer with a name (and optional chat bubble).
+        Uses one reused item pair per peer so no trail leaks across refreshes."""
         try:
-            from PyQt5.QtGui import QPolygonF, QPen, QBrush
+            from PyQt5.QtGui import QPolygonF, QPen, QBrush, QColor, QFont
             from PyQt5.QtCore import QPointF
             from PyQt5.QtWidgets import QGraphicsTextItem
 
-            # lazy-create the pair for this peer
+            # ---- bigger pointer ----
+            size = 20
+            poly = QPolygonF([
+                QPointF(0, 0),
+                QPointF(size, size * 0.35),
+                QPointF(size * 0.5, size * 0.5),
+                QPointF(size * 0.65, size),
+            ])
+
+            # ---- adaptive text color based on canvas pixel under cursor ----
+            label_color = QColor("white")
+            try:
+                if self.project is not None:
+                    # composite on the fly at that point
+                    from core.layer import merge_layers
+                    comp = merge_layers(self.project.layers,
+                                        self.project.width, self.project.height,
+                                        background=self.project.background)
+                    if 0 <= int(x) < comp.width() and 0 <= int(y) < comp.height():
+                        c = comp.pixelColor(int(x), int(y))
+                        # if the pixel is light, use black text; else white
+                        if c.lightness() > 140:
+                            label_color = QColor("black")
+                        else:
+                            label_color = QColor("white")
+            except Exception:
+                pass
+
+            # ---- hide/show tracking ----
             pair = self._remote_cursor_items.get(name)
             if pair is None:
-                poly = QPolygonF([
-                    QPointF(0, 0), QPointF(12, 4),
-                    QPointF(6, 6), QPointF(8, 12),
-                ])
                 item = self.scene.addPolygon(
-                    poly, QPen(QColor('#ff3030'), 1),
-                    QBrush(QColor(255, 48, 48, 220)))
+                    poly, QPen(QColor('#ff3030'), 2),
+                    QBrush(QColor(255, 48, 48, 230)))
                 item.setZValue(1000)
+
+                # background rect for the label so it reads on any canvas
                 label = QGraphicsTextItem(name)
-                label.setDefaultTextColor(QColor('white'))
+                label_font = QFont()
+                label_font.setPointSize(10)
+                label_font.setBold(True)
+                label.setFont(label_font)
+                label.setDefaultTextColor(label_color)
                 label.setZValue(1001)
                 self.scene.addItem(label)
                 self._remote_cursor_items[name] = (item, label)
@@ -974,7 +1005,76 @@ class Canvas(QGraphicsView):
 
             item, label = pair
             item.setPos(QPointF(x, y))
-            label.setPos(x + 14, y + 2)
+            label.setDefaultTextColor(label_color)
+            label.setPos(x + size + 2, y + 2)
+            self._remote_cursor_pos[name] = (x, y)
+
+            # ---- optional chat bubble ----
+            if message:
+                self._show_chat_bubble(name, x, y - size - 30, message, label_color)
+
+        except Exception:
+            pass
+
+    def show_chat_from(self, name: str, text: str):
+        """Display a chat bubble above a peer's current cursor."""
+        pos = self._remote_cursor_pos.get(name)
+        if pos is None:
+            return
+        x, y = pos
+        self._show_chat_bubble(name, x, y - 40, text, QColor("white"))
+
+    def _show_chat_bubble(self, name: str, x: float, y: float,
+                          message: str, fg_color):
+        """Draw a chat bubble above the cursor for ~4 seconds."""
+        try:
+            from PyQt5.QtGui import QColor, QPainter, QPixmap, QFont, QPen, QBrush
+            from PyQt5.QtCore import Qt, QTimer, QPointF
+            from PyQt5.QtWidgets import QGraphicsPixmapItem
+
+            # build the bubble offscreen
+            font = QFont(); font.setPointSize(10)
+            text = f"{name}: {message[:80]}"
+            metrics_font = font
+            pad = 8
+            # measure with QFontMetrics (needs a QPixmap to paint)
+            from PyQt5.QtGui import QFontMetrics
+            fm = QFontMetrics(font)
+            text_w = min(320, fm.horizontalAdvance(text) + pad * 2)
+            text_h = fm.height() + pad * 2
+
+            pm = QPixmap(int(text_w) + 4, int(text_h) + 10)
+            pm.fill(Qt.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.Antialiasing, True)
+            # bubble background
+            p.setBrush(QBrush(QColor(30, 30, 30, 230)))
+            p.setPen(QPen(QColor(255, 255, 255, 80), 1))
+            p.drawRoundedRect(2, 2, pm.width() - 6, pm.height() - 12, 6, 6)
+            # pointer tail
+            p.drawPolygon(QPointF(pm.width()/2 - 5, pm.height() - 12),
+                          QPointF(pm.width()/2 + 5, pm.height() - 12),
+                          QPointF(pm.width()/2, pm.height() - 2))
+            # text
+            p.setPen(QColor("white"))
+            p.setFont(font)
+            p.drawText(2 + pad, 2 + pad + fm.ascent(), text)
+            p.end()
+
+            item = QGraphicsPixmapItem(pm)
+            item.setPos(x, y)
+            item.setZValue(1002)
+            self.scene.addItem(item)
+
+            # auto-remove
+            scene_ref = self.scene
+            def _remove():
+                try:
+                    if item.scene() is scene_ref:
+                        scene_ref.removeItem(item)
+                except Exception:
+                    pass
+            QTimer.singleShot(4000, _remove)
         except Exception:
             pass
 

@@ -1394,6 +1394,7 @@ class MainWindow(QMainWindow):
             color = "#ffaa44" if name != dlg.name else "#4ea8ff"
             self._chat_dock.append_message(name, text, color)
         session.chatReceived.connect(_on_chat_received)
+        session.chatBubble.connect(self.canvas.show_chat_from)
 
         # status messages
         session.statusMessage.connect(
