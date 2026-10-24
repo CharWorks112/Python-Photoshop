@@ -1,25 +1,16 @@
-"""Updater — downloads every managed file from GitHub on launch, then runs main.py.
-No SHA comparison, no cache-busting, no 'up to date' checks. Just fetch and go."""
-
-import datetime
-import subprocess
-import sys
-import time
+"""Updater — downloads every managed file from GitHub on launch. No SHA, no state."""
+import datetime, subprocess, sys, time
 from pathlib import Path
 
 try:
     import requests
 except ImportError:
     import urllib.request, urllib.error
-
     class _Resp:
         def __init__(self, data, status=200):
-            self.content = data
-            self.status_code = status
+            self.content = data; self.status_code = status
         def raise_for_status(self):
-            if self.status_code >= 400:
-                raise RuntimeError(f"HTTP {self.status_code}")
-
+            if self.status_code >= 400: raise RuntimeError(f"HTTP {self.status_code}")
     class requests:
         @staticmethod
         def get(url, timeout=30, headers=None, stream=False):
@@ -30,19 +21,11 @@ except ImportError:
             except urllib.error.HTTPError as e:
                 return _Resp(b"", e.code)
 
-
-GITHUB_OWNER  = "CharWorks112"
-GITHUB_REPO   = "Python-Photoshop"
-GITHUB_BRANCH = "main"
-RAW_BASE      = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}"
-
+RAW_BASE = "https://raw.githubusercontent.com/CharWorks112/Python-Photoshop/main"
 ROOT = Path(__file__).resolve().parent
 
 MANAGED_FILES = [
-    "example.txt",
-    "main.py",
-    "updater.py",
-    "requirements.txt",
+    "example.txt", "main.py", "updater.py", "requirements.txt",
     "core/layer.py", "core/project.py", "core/shape_layer.py",
     "core/image_shape.py", "core/shape_objects.py", "core/sounds.py",
     "core/imagemagick.py", "core/export.py", "core/fill.py",
@@ -58,89 +41,67 @@ MANAGED_FILES = [
     "extensions/collab/chat_dock.py",
 ]
 
-REQUIRED_MODULES = ["PyQt5", "numpy", "zeroconf"]
-
-
-def fetch(url, bust_cache=True):
-    """GET a URL. Returns bytes or None on 404/error. Cache-busted by default."""
-    if bust_cache:
-        sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}cb={int(time.time() * 1000)}"
+def fetch(url):
+    sep = "&" if "?" in url else "?"
+    url = f"{url}{sep}cb={int(time.time() * 1000)}"
     try:
-        r = requests.get(url, timeout=15,
-                         headers={"User-Agent": "pp-updater",
-                                  "Cache-Control": "no-cache"})
-        if r.status_code == 404:
-            return None
+        r = requests.get(url, timeout=15, headers={"User-Agent": "pp-updater",
+                                                    "Cache-Control": "no-cache"})
+        if r.status_code == 404: return None
         r.raise_for_status()
         return r.content
     except Exception:
         return None
 
-
 def check_dependencies():
     missing = []
-    for mod in REQUIRED_MODULES:
-        try:
-            __import__(mod)
-        except ImportError:
-            missing.append(mod)
+    for mod in ["PyQt5", "numpy", "zeroconf"]:
+        try: __import__(mod)
+        except ImportError: missing.append(mod)
     return missing
 
-
 def install_dependencies(missing):
-    if not missing:
-        return
+    if not missing: return
     import shutil
     pacman_map = {"PyQt5": "python-pyqt5", "numpy": "python-numpy", "zeroconf": "python-zeroconf"}
     apt_map    = {"PyQt5": "python3-pyqt5", "numpy": "python3-numpy", "zeroconf": "python3-zeroconf"}
     if shutil.which("pacman"):
-        pkgs = [pacman_map.get(m, m) for m in missing]
         try:
-            subprocess.check_call(["sudo", "pacman", "-S", "--noconfirm", *pkgs])
+            subprocess.check_call(["sudo", "pacman", "-S", "--noconfirm",
+                                   *[pacman_map.get(m, m) for m in missing]])
             return
-        except Exception:
-            pass
+        except Exception: pass
     if shutil.which("apt"):
-        pkgs = [apt_map.get(m, m) for m in missing]
         try:
-            subprocess.check_call(["sudo", "apt", "install", "-y", *pkgs])
+            subprocess.check_call(["sudo", "apt", "install", "-y",
+                                   *[apt_map.get(m, m) for m in missing]])
             return
-        except Exception:
-            pass
+        except Exception: pass
     subprocess.check_call([sys.executable, "-m", "pip", "install",
                            "--break-system-packages", *missing])
 
-
-def download_all() -> tuple[int, int, int]:
-    """Download every managed file, no comparisons.
-    Returns (downloaded, skipped, failed)."""
-    ok = skipped = failed = 0
+def download_all():
+    ok = same = failed = 0
+    print(f"[updater] Downloading {len(MANAGED_FILES)} files from GitHub…")
     for rel in MANAGED_FILES:
         content = fetch(f"{RAW_BASE}/{rel}")
         if content is None:
             failed += 1
-            print(f"[updater]   ✗ {rel} (not found or error)")
+            print(f"[updater]   ✗ {rel} (404)")
             continue
+        local = ROOT / rel
         try:
-            local = ROOT / rel
             local.parent.mkdir(parents=True, exist_ok=True)
-            # Compare with existing bytes to avoid rewriting identical files (harmless)
-            if local.is_file():
-                try:
-                    if local.read_bytes() == content:
-                        skipped += 1
-                        continue
-                except Exception:
-                    pass
+            if local.is_file() and local.read_bytes() == content:
+                same += 1
+                continue
             local.write_bytes(content)
             ok += 1
             print(f"[updater]   ↓ {rel}")
         except Exception as e:
             failed += 1
-            print(f"[updater]   ✗ {rel} (write failed: {e})")
-    return ok, skipped, failed
-
+            print(f"[updater]   ✗ {rel} (write: {e})")
+    return ok, same, failed
 
 def main():
     print(f"[updater] Python Photoshop updater — {datetime.datetime.now().strftime('%H:%M:%S')}")
@@ -148,8 +109,6 @@ def main():
 
     if not (ROOT / "main.py").is_file():
         print("[updater] ❌ main.py missing.")
-        print("[updater] Manual install:")
-        print("[updater]   git clone https://github.com/CharWorks112/Python-Photoshop.git")
         return 1
 
     missing = check_dependencies()
@@ -157,16 +116,14 @@ def main():
         print(f"[updater] Installing: {', '.join(missing)}")
         install_dependencies(missing)
 
-    print("[updater] Downloading all files from GitHub…")
-    ok, skipped, failed = download_all()
-    print(f"[updater] ✅ Downloaded {ok}, unchanged {skipped}, failed {failed}")
+    ok, same, failed = download_all()
+    print(f"[updater] ✅ Downloaded {ok}, unchanged {same}, failed {failed}")
 
     print("[updater] Launching main.py…")
     try:
         return subprocess.call([sys.executable, str(ROOT / "main.py")], cwd=str(ROOT))
     except KeyboardInterrupt:
         return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
