@@ -10,6 +10,10 @@ A PyQt5-based image editor with **real-time LAN collaboration**, written in Pyth
 
 <p align="center"><em>The editor in action</em></p>
 
+![Live LAN collaboration](collab_demo.png)
+
+<p align="center"><em>Real-time collaboration over LAN</em></p>
+
 ---
 
 ## ✨ Features
